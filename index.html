@@ -779,6 +779,9 @@
         }
 
         /* Compact view for cards */
+        body.compact-view .channel-grid {
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); /* Adjust grid for compact */
+        }
         body.compact-view .channel-card {
             padding: 8px 8px 7px;
             border-radius: 10px;
@@ -921,9 +924,16 @@
                 grid-template-columns: repeat(auto-fit, minmax(135px, 1fr));
                 gap: 8px;
             }
+            body.compact-view .channel-grid {
+                grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            }
             .channel-logo {
                 width: 60px;
                 height: 60px;
+            }
+            body.compact-view .channel-logo {
+                width: 45px;
+                height: 45px;
             }
             .channel-name { font-size: 12px; }
             .player-wrapper { top: 64px; }
@@ -1035,7 +1045,7 @@
     <p class="modal-helper">
         Supports MP4, M3U8, MPD and Pixeldrain links like<br>
         <code>https://pixeldrain.com/u/Test</code><br>
-        (auto → <code>/api/file/Test</code>)
+        (auto &rarr; <code>/api/file/Test</code>)
     </p>
     <input type="text" id="directPlayUrlInput" placeholder="Video URL (M3U8, MP4, MPD, Pixeldrain, etc.)">
     <div class="modal-buttons">
@@ -1098,10 +1108,10 @@
     // Hardcoded Premium Playlists (as requested)
     const HARDCODED_PREMIUM_PLAYLISTS = [
         { name: "MRZ TV 🚀", url: "https://raw.githubusercontent.com/Miraz6755/Iptv.m3u/c3b41b3a2de8d653b142425206a6dafbd71d8b20/Miraz%20tv" },
-        { name: "Aynaa OTT ✨", url: "https://raw.githubusercontent.com/hasanhabibmottakin/AynaOTT/refs/heads/main/playlist.m3u" },
+        { name: "Aynaa OTT ✨[OFF]", url: "https://raw.githubusercontent.com/hasanhabibmottakin/AynaOTT/refs/heads/main/playlist.m3u" },
         { name: "PKBD VIP 💎", url: "https://raw.githubusercontent.com/MRM3UK/New-try/refs/heads/main/PKBD.m3u" }
     ];
-
+    // This URL check ensures a channel is not re-played automatically if a specific one was linked
     const urlParams = new URLSearchParams(window.location.search);
     const m3uUrl = urlParams.get('link') || DEFAULT_PLAYLIST;
     
@@ -1110,14 +1120,15 @@
     let categories = new Set();
     let sortedCategories = []; // To hold sorted category names for the 7-limit logic
     let categoryCounts = {};
-    let customPlaylists = [];
-    let player1; 
-    let dashPlayer = null;
+    let customPlaylists = []; // Only user-added playlists
+    let player1; // PlayerJS instance
+    let dashPlayer = null; // dash.js instance
     let currentChannel = { url: null, name: null, logo: null, card: null }; // Storing current channel info
     let activePlayer = 'player1';
     let currentCategory = 'All';
     let isPremiumMode = false;
     let showAllCategories = false;
+    let isCompactView = false; // Added view mode state
 
     const menuBtn = document.getElementById('menuBtn');
     const sidebar = document.getElementById('sidebar');
@@ -1158,22 +1169,30 @@
     const viewComfortBtn = document.getElementById('viewComfort');
     const viewCompactBtn = document.getElementById('viewCompact');
 
+    /**
+     * Normalizes special URLs (like Pixeldrain) to direct playback links.
+     * @param {string} inputUrl
+     * @returns {string} The normalized URL.
+     */
     function normalizePixeldrainUrl(inputUrl) {
         if (!inputUrl) return inputUrl;
+        const url = inputUrl.trim();
         try {
-            const u = new URL(inputUrl.trim());
-            if (!u.hostname.includes('pixeldrain.com')) return inputUrl;
+            const u = new URL(url);
+            if (!u.hostname.includes('pixeldrain.com')) return url;
 
             const parts = u.pathname.split('/').filter(Boolean);
+            // Handle https://pixeldrain.com/u/Test
             if (parts[0] === 'u' && parts[1]) {
                 return `https://pixeldrain.com/api/file/${parts[1]}`;
             }
+            // Handle already converted /api/file/Test
             if (parts[0] === 'api' && parts[1] === 'file' && parts[2]) {
-                return inputUrl;
+                return url;
             }
-            return inputUrl;
+            return url;
         } catch (e) {
-            return inputUrl;
+            return url; // Return original if URL is invalid (e.g., just a short hash)
         }
     }
 
@@ -1215,6 +1234,7 @@
         activePlayer = 'player1';
         player1Btn.classList.add('active');
         player2Btn.classList.remove('active');
+        updateNowPlaying(currentChannel.name, currentChannel.logo);
         if (currentChannel.url) {
             // Re-play the current channel with the new player
             playChannel(currentChannel.url, currentChannel.name, currentChannel.logo, currentChannel.card);
@@ -1226,6 +1246,7 @@
         activePlayer = 'player2';
         player2Btn.classList.add('active');
         player1Btn.classList.remove('active');
+        updateNowPlaying(currentChannel.name, currentChannel.logo);
         if (currentChannel.url) {
             // Re-play the current channel with the new player
             playChannel(currentChannel.url, currentChannel.name, currentChannel.logo, currentChannel.card);
@@ -1240,41 +1261,28 @@
         const labelSpan = premiumStatus.querySelector('.label');
         if (isPremiumMode) {
             document.body.classList.add('premium-mode');
-            labelSpan.textContent = 'Premium mode • Stadium view';
+            labelSpan.textContent = `Premium mode • ${isCompactView ? 'Compact' : 'Comfort'} view`;
         } else {
             document.body.classList.remove('premium-mode');
-            labelSpan.textContent = 'Free mode • Standard view';
+            labelSpan.textContent = `Free mode • ${isCompactView ? 'Compact' : 'Comfort'} view`;
         }
+        switchPremium.classList.toggle('premium-active', isPremiumMode);
+        switchFree.classList.toggle('free-active', !isPremiumMode);
     }
 
     premiumSwitch.addEventListener('click', () => {
         const oldPremiumMode = isPremiumMode;
         isPremiumMode = !isPremiumMode;
+        
+        const newPlaylistUrl = isPremiumMode ? PREMIUM_PLAYLIST : DEFAULT_PLAYLIST;
 
-        if (isPremiumMode) {
-            switchPremium.classList.add('premium-active');
-            switchFree.classList.remove('free-active');
-            channelGrid.innerHTML = '<div class="loading-message">Loading premium playlist...</div>';
-            fetchM3U(PREMIUM_PLAYLIST, true);
-        } else {
-            switchPremium.classList.remove('premium-active');
-            switchFree.classList.add('free-active');
-            channelGrid.innerHTML = '<div class="loading-message">Loading default playlist...</div>';
-            fetchM3U(DEFAULT_PLAYLIST, true);
-        }
+        channelGrid.innerHTML = `<div class="loading-message">Loading ${isPremiumMode ? 'premium' : 'default'} playlist...</div>`;
+        fetchM3U(newPlaylistUrl, true);
         
         updatePremiumUI();
         renderCustomPlaylists(); // Re-render playlists to show/hide premium ones
         
-        // If the premium status changed and a channel was playing, play it again (unless it was a custom playlist channel)
-        if (oldPremiumMode !== isPremiumMode && currentChannel.url) {
-            // Wait for the new playlist to load before attempting to play
-            setTimeout(() => {
-                // We're keeping the current channel object, so no need to find it in the new list
-                // If the channel is not in the new list, playChannel will fail gracefully
-                playChannel(currentChannel.url, currentChannel.name, currentChannel.logo, currentChannel.card);
-            }, 500); // Small delay to allow playlist parsing to start
-        }
+        // No need to wait with a timeout. The `fetchM3U` will eventually call `playChannel` if necessary.
     });
 
     addPlaylistBtn.addEventListener('click', () => {
@@ -1328,17 +1336,17 @@
         }
     });
 
-    /* View & Layout toggle */
+    /**
+     * Toggles the main channel grid view between 'comfort' (default) and 'compact'.
+     * @param {string} mode - 'comfort' or 'compact'
+     */
     function setViewMode(mode) {
-        if (mode === 'compact') {
-            document.body.classList.add('compact-view');
-            viewCompactBtn.classList.add('active');
-            viewComfortBtn.classList.remove('active');
-        } else {
-            document.body.classList.remove('compact-view');
-            viewComfortBtn.classList.add('active');
-            viewCompactBtn.classList.remove('active');
-        }
+        isCompactView = mode === 'compact';
+        document.body.classList.toggle('compact-view', isCompactView);
+        viewCompactBtn.classList.toggle('active', isCompactView);
+        viewComfortBtn.classList.toggle('active', !isCompactView);
+        updatePremiumUI();
+        // Save state to localStorage if needed
     }
     viewComfortBtn.addEventListener('click', () => setViewMode('comfort'));
     viewCompactBtn.addEventListener('click', () => setViewMode('compact'));
@@ -1347,12 +1355,17 @@
         return JSON.parse(localStorage.getItem('recentHistory')) || [];
     }
 
+    /**
+     * Saves the currently playing channel to the recent history.
+     * @param {{url: string, name: string, logo: string}} channel 
+     */
     function saveRecentHistory(channel) {
         let history = getRecentHistory();
+        // Filter out existing entry by URL
         history = history.filter(item => item.url !== channel.url);
-        // Only save url, name, logo, not the card element
+        // Only save url, name, logo
         history.unshift({ url: channel.url, name: channel.name, logo: channel.logo }); 
-        history = history.slice(0, 5);
+        history = history.slice(0, 5); // Keep max 5 items
         localStorage.setItem('recentHistory', JSON.stringify(history));
         renderRecentHistory();
     }
@@ -1361,7 +1374,7 @@
         const history = getRecentHistory();
         recentHistory.innerHTML = '';
         if (history.length === 0) {
-            recentHistory.innerHTML = '<li class="sidebar-item">No recent channels</li>';
+            recentHistory.innerHTML = '<li class="sidebar-item" style="cursor: default; opacity: 0.7;">No recent channels</li>';
             return;
         }
         history.forEach(channel => {
@@ -1415,25 +1428,25 @@
         saveCustomPlaylists();
     }
 
-    function deleteCustomPlaylist(index) {
-        customPlaylists.splice(index, 1);
-        saveCustomPlaylists();
+    function deleteCustomPlaylist(url) {
+        const initialLength = customPlaylists.length;
+        customPlaylists = customPlaylists.filter(p => p.url !== url);
+        if (customPlaylists.length < initialLength) {
+            saveCustomPlaylists();
+        }
     }
 
     function renderCustomPlaylists() {
         customPlaylists = getCustomPlaylists();
         customPlaylistsList.innerHTML = '';
 
-        let playlistsToDisplay = customPlaylists;
-        
-        // Add hardcoded premium playlists if in premium mode
-        if (isPremiumMode) {
-            playlistsToDisplay = HARDCODED_PREMIUM_PLAYLISTS.concat(playlistsToDisplay);
-        }
+        let playlistsToDisplay = [];
+        const hardcodedPlaylists = isPremiumMode ? HARDCODED_PREMIUM_PLAYLISTS : [];
+        playlistsToDisplay = hardcodedPlaylists.concat(customPlaylists);
 
         if (playlistsToDisplay.length === 0) return;
         
-        playlistsToDisplay.forEach((playlist, index) => {
+        playlistsToDisplay.forEach((playlist) => {
             const li = document.createElement('li');
             li.className = 'sidebar-item';
             
@@ -1450,8 +1463,8 @@
                 toggleMenu();
             };
             
-            // Only allow deletion for custom user-added playlists
-            const isCustom = index >= (isPremiumMode ? HARDCODED_PREMIUM_PLAYLISTS.length : 0);
+            // Determine if the playlist is user-added (i.e., not one of the hardcoded premium ones)
+            const isCustom = !hardcodedPlaylists.some(p => p.url === playlist.url);
             
             if (isCustom) {
                 const deleteBtn = document.createElement('span');
@@ -1459,28 +1472,32 @@
                 deleteBtn.textContent = '×';
                 deleteBtn.onclick = (e) => {
                     e.stopPropagation();
-                    if (confirm(`Delete playlist "${playlist.name}"?`)) {
-                        // Adjust index because hardcoded lists are prepended
-                        const customIndex = index - HARDCODED_PREMIUM_PLAYLISTS.length;
-                        deleteCustomPlaylist(customIndex);
+                    if (confirm(`Delete custom playlist "${playlist.name}"?`)) {
+                        deleteCustomPlaylist(playlist.url);
                     }
                 };
                 li.appendChild(deleteBtn);
             }
 
-            li.appendChild(nameSpan);
+            li.prepend(nameSpan);
             customPlaylistsList.appendChild(li);
         });
     }
 
+    /**
+     * Fetches and parses an M3U playlist.
+     * @param {string} url - The URL of the M3U/M3U8 file.
+     * @param {boolean} forceReload - Whether to clear all channel data before fetching.
+     */
     async function fetchM3U(url, forceReload = false) {
-        // Clear previous channels immediately to show loading state for new list
         if (forceReload) {
             allChannels = [];
             displayedChannelElements = [];
-            channelGrid.innerHTML = '<div class="loading-message">Loading new playlist...</div>';
+            channelGrid.innerHTML = `<div class="loading-message">Loading **${isPremiumMode ? 'premium' : 'default'}** playlist...</div>`;
             categories.clear();
             categoryCounts = {};
+            currentCategory = 'All';
+            renderVisibleCategories(); // Clear and reset categories
         }
 
         try {
@@ -1502,6 +1519,10 @@
         }
     }
 
+    /**
+     * Parses the raw M3U string into channel objects.
+     * @param {string} data - The M3U content.
+     */
     async function parseM3U(data) {
         const lines = data.split("\n");
         const channels = [];
@@ -1513,15 +1534,19 @@
         lines.forEach(line => {
             line = line.trim();
             if (line.startsWith("#EXTINF")) {
-                const nameMatch = line.match(/,(.+)$/);
-                const logoMatch = line.match(/tvg-logo="([^"]*)"/);
-                const groupMatch = line.match(/group-title="([^"]*)"/);
+                
+                // *** FIX APPLIED HERE: Use the regex to capture content after the LAST comma. ***
+                const nameMatch = line.match(/[^,]*$/); 
+                // tvg-logo is the standard key
+                const logoMatch = line.match(/tvg-logo="([^"]*)"/); 
+                // group-title is the standard key
+                const groupMatch = line.match(/group-title="([^"]*)"/); 
                 
                 channel = {
-                    name: nameMatch ? nameMatch[1].trim() : "Unknown Channel",
+                    name: nameMatch ? nameMatch[0].trim() : "Unknown Channel",
                     logo: logoMatch && logoMatch[1] ? logoMatch[1].trim() : "https://via.placeholder.com/80",
                     category: groupMatch && groupMatch[1] ? groupMatch[1].trim() : "Others",
-                    status: 'offline'
+                    status: 'offline' // Initial status
                 };
                 if (channel.category) {
                     categories.add(channel.category);
@@ -1541,21 +1566,27 @@
         });
         
         allChannels = channels;
-        sortedCategories = Array.from(categories).filter(c => c !== 'All').sort(); // For 7-limit logic
+        // Sort categories alphabetically, excluding 'All'
+        sortedCategories = Array.from(categories).filter(c => c !== 'All').sort(); 
         
         await initializeChannelDisplay(channels);
         renderVisibleCategories();
-        filterChannels('All');
+        filterChannels(currentCategory);
 
-        if (channels.length > 0) {
-            // Do NOT auto-play the first channel if the user was already watching one
-            if (!currentChannel.url || currentChannel.url === DEFAULT_PLAYLIST || currentChannel.url === PREMIUM_PLAYLIST) {
-                 const first = channels[0];
-                 playChannel(first.url, first.name, first.logo);
-            }
+        if (channels.length > 0 && 
+            (!currentChannel.url || 
+             currentChannel.url === DEFAULT_PLAYLIST || 
+             currentChannel.url === PREMIUM_PLAYLIST)) {
+            // Only auto-play the first channel if no channel is currently set or if the last "channel" was a playlist URL
+             const first = channels[0];
+             playChannel(first.url, first.name, first.logo);
         }
     }
 
+    /**
+     * Renders channel cards to the grid and updates the progress bar.
+     * @param {Array<object>} channels - The list of channel objects to display.
+     */
     async function initializeChannelDisplay(channels) {
         const progressFill = document.getElementById("progressFill");
         const progressText = document.getElementById("progressText");
@@ -1574,18 +1605,19 @@
         
         const total = channels.length;
         let loaded = 0;
-        const chunkSize = 50;
+        const chunkSize = 50; // Throttle rendering to prevent browser freeze
         
         for (let i = 0; i < total; i++) {
             const channel = channels[i];
             const card = document.createElement("div");
             card.className = `channel-card`;
             card.innerHTML = `
-                <img class="channel-logo" src="${channel.logo}" alt="${channel.name}" onerror="this.src='https://via.placeholder.com/80'">
+                <img class="channel-logo" src="${channel.logo}" alt="${channel.name}" onerror="this.src='https://via.placeholder.com/80?text=NO+LOGO'">
                 <div class="channel-name">${channel.name}</div>
                 <span class="channel-category-badge">${channel.category || 'OTHER'}</span>
             `;
-            card.onclick = () => playChannel(channel.url, channel.name, channel.logo, card);
+            // Capture all info for replay and history
+            card.onclick = () => playChannel(channel.url, channel.name, channel.logo, card); 
             card.dataset.category = channel.category;
             card.dataset.channelName = channel.name.toLowerCase();
             card.dataset.channelUrl = channel.url;
@@ -1602,6 +1634,7 @@
             progressFill.style.width = `${progress}%`;
             progressText.innerText = `Loading ${loaded}/${total} channels (${progress}%)`;
 
+            // Yield control periodically
             if (i % chunkSize === 0 || i === total - 1) {
                 await new Promise(resolve => setTimeout(resolve, 10));
             }
@@ -1611,27 +1644,42 @@
     }
 
     function updateChannelCardStatus(url, status) {
-        // console.log(`Channel Status Update: ${url} -> ${status}`);
-        // Not implementing visual feedback for status in this change, just logging
+        // Find the channel card element using the URL data attribute
+        const card = document.querySelector(`.channel-card[data-channel-url="${url}"]`);
+        if (card) {
+            // Add or remove a class for visual status if needed (e.g., card.classList.toggle('online', status === 'online');)
+            // No visual change implemented in this CSS/JS, but the function is here.
+        }
     }
 
+    /**
+     * Plays a channel using the active player.
+     * @param {string} url - The channel URL.
+     * @param {string} name - The channel name.
+     * @param {string} logo - The channel logo URL.
+     * @param {HTMLElement} [cardElement=null] - The channel card element (optional).
+     */
     function playChannel(url, name = "Unknown Channel", logo = "https://via.placeholder.com/80", cardElement = null) {
         const playbackUrl = normalizePixeldrainUrl(url);
         const isPixeldrainFile = playbackUrl.includes('pixeldrain.com/api/file');
         const isDash = playbackUrl.toLowerCase().includes('.mpd');
 
-        // Logic to switch player for Pixeldrain, if necessary
-        if (isPixeldrainFile && activePlayer !== 'player2') {
-            activePlayer = 'player2';
-            player2Btn.classList.add('active');
-            player1Btn.classList.remove('active');
-        } else if (!isPixeldrainFile && activePlayer === 'player2' && !isDash) {
-            // Optional: Switch back to player 1 if it's not a special case, but keep user's choice otherwise
+        // Logic to switch player for special cases if user hasn't chosen one
+        if (isDash && activePlayer !== 'player2') {
+             activePlayer = 'player2'; // Dash should use HTML5 player + dash.js
+             player2Btn.click(); // Simulate click to update UI
+        } else if (isPixeldrainFile && activePlayer !== 'player2') {
+             activePlayer = 'player2'; // Pixeldrain often requires HTML5 player
+             player2Btn.click(); // Simulate click to update UI
+        } else if (!isDash && !isPixeldrainFile && activePlayer === 'player2') {
+            // Could auto-switch back to player 1 for generic M3U8 if user selected P2 by accident, but better to respect user's choice:
+            // activePlayer = 'player1';
+            // player1Btn.click();
         }
-
 
         currentChannel = { url, name, logo, card: cardElement };
         
+        // Cleanup previous players
         try { if (player1) player1.api("destroy"); } catch (e) {}
         player1 = null;
         if (dashPlayer) {
@@ -1648,7 +1696,7 @@
         videoPlayer2Video.classList.remove('active');
         
         const handleError = () => {
-            console.error(`Playback failed for ${name} on ${activePlayer}`);
+            console.error(`Playback failed for ${name} on ${activePlayer} using URL: ${playbackUrl}`);
             alert(`Error playing ${name}. The stream may be offline, blocked, or the URL is invalid.`);
             if (cardElement) {
                 updateChannelCardStatus(url, 'error');
@@ -1680,11 +1728,12 @@
             if (isDash && typeof dashjs !== 'undefined') {
                 dashPlayer = dashjs.MediaPlayer().create();
                 dashPlayer.initialize(videoPlayer2Video, playbackUrl, true);
-                dashPlayer.on(dashjs.MediaPlayer.events.ERROR, function () {
-                    handleError();
-                });
+                dashPlayer.on(dashjs.MediaPlayer.events.ERROR, handleError); // Removed function wrap
             } else {
+                // For MP4, M3U8 (native support), and Pixeldrain
                 videoPlayer2Video.src = playbackUrl;
+                // Use a single event listener for error on the video element
+                videoPlayer2Video.removeEventListener('error', handleError); 
                 videoPlayer2Video.addEventListener('error', handleError, { once: true });
             }
 
@@ -1695,11 +1744,13 @@
             }, { once: true });
 
             videoPlayer2Video.play().catch(e => {
-                console.log("Autoplay prevented:", e);
+                // Autoplay blocked handling
                 if (e.name === "NotAllowedError") {
-                    // Mute and try again, common workaround for mobile/chrome
+                    console.log("Autoplay prevented. Muting and trying again.");
                     videoPlayer2Video.muted = true;
                     videoPlayer2Video.play().catch(handleError);
+                } else {
+                     handleError();
                 }
             });
         }
@@ -1717,16 +1768,21 @@
         
         if (name && name !== "Unknown Channel") {
             nowPlayingLogo.src = logo;
+            nowPlayingLogo.onerror = () => nowPlayingLogo.src = 'https://via.placeholder.com/40';
             nowPlayingTitle.textContent = name;
             nowPlayingPlayer.textContent = activePlayer === 'player1' 
                 ? 'Playing via PlayerJS'
-                : 'Playing via HTML5 Player';
+                : 'Playing via HTML5/Dash Player';
             nowPlaying.classList.add('active');
         } else {
             nowPlaying.classList.remove('active');
         }
     }
 
+    /**
+     * Filters the channel grid based on the current category and search term.
+     * @param {string} category - The category to filter by (or 'All').
+     */
     function filterChannels(category = 'All') {
         currentCategory = category;
         const searchTerm = searchInput.value.toLowerCase();
@@ -1742,12 +1798,9 @@
             }
         });
 
+        // Update active class on category list items
         document.querySelectorAll('#categoryList .sidebar-item').forEach(li => {
-            if (li.dataset.category === category) {
-                li.classList.add('active');
-            } else {
-                li.classList.remove('active');
-            }
+            li.classList.toggle('active', li.dataset.category === category);
         });
     }
 
@@ -1760,6 +1813,8 @@
         categoryList.innerHTML = '';
         
         const totalChannels = allChannels.length;
+        
+        // 1. Render 'All Channels'
         const allLi = document.createElement('li');
         allLi.className = 'sidebar-item';
         allLi.textContent = `All Channels`;
@@ -1775,10 +1830,12 @@
         let shouldShowSeeAll = false;
 
         if (!showAllCategories && sortedCategories.length > visibleLimit) {
-            categoriesToRender = sortedCategories.slice(0, visibleLimit - 1); // Save space for See All
+            // Show only the first 6 categories + the "See All" button
+            categoriesToRender = sortedCategories.slice(0, visibleLimit - 1); 
             shouldShowSeeAll = true;
         }
 
+        // 2. Render visible categories
         categoriesToRender.forEach(cat => {
             const li = document.createElement('li');
             li.className = 'sidebar-item';
@@ -1793,13 +1850,14 @@
             categoryList.appendChild(li);
         });
 
+        // 3. Render 'See All' / 'See Less' button
         if (sortedCategories.length > visibleLimit && !showAllCategories) {
              const seeAllLi = document.createElement('li');
              seeAllLi.className = 'sidebar-item see-all-btn';
              seeAllLi.textContent = `See All (${sortedCategories.length} Categories)`;
              seeAllLi.onclick = toggleCategoryView;
              categoryList.appendChild(seeAllLi);
-        } else if (showAllCategories) {
+        } else if (showAllCategories && sortedCategories.length > visibleLimit) {
              const seeLessLi = document.createElement('li');
              seeLessLi.className = 'sidebar-item see-all-btn';
              seeLessLi.textContent = `See Less`;
@@ -1821,12 +1879,19 @@
     }
 
     window.addEventListener('DOMContentLoaded', () => {
+        // Initialize from local storage if needed, default to comfort
+        setViewMode('comfort'); 
+        
+        // Initial setup
         renderRecentHistory();
         renderCustomPlaylists();
         updatePremiumUI();
-        setViewMode('comfort');
+        
+        // Clock setup
         updateClock();
         setInterval(updateClock, 1000);
+        
+        // Load the initial playlist
         channelGrid.innerHTML = '<div class="loading-message">Loading default playlist...</div>';
         fetchM3U(m3uUrl);
     });
